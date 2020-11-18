@@ -1,14 +1,19 @@
+import time
+
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import _num_samples, check_array
+
 
 class MockClassifier:
     """Dummy classifier to test the parameter search algorithms"""
 
     def __init__(self, foo_param=0):
+        self.count = 0
         self.foo_param = foo_param
 
     def fit(self, X, Y):
+        self.count += 1
         assert len(X) == len(Y)
         self.classes_ = np.unique(Y)
         return self
@@ -39,6 +44,18 @@ class MockClassifier:
         return self
 
 
+class SleepClassifier(MockClassifier):
+    def fit(self, X, Y):
+        time.sleep(self.foo_param)
+        return super().fit(X, Y)
+
+    def partial_fit(self, X, Y):
+        return self.fit(X, Y)
+
+    def score(self, X=None, Y=None):
+        return self.foo_param
+
+
 class CheckingClassifier(BaseEstimator, ClassifierMixin):
     """Dummy classifier to test pipelining and meta-estimators.
     Checks some property of X and y in fit / predict.
@@ -46,9 +63,11 @@ class CheckingClassifier(BaseEstimator, ClassifierMixin):
     changed the input.
     """
 
-    def __init__(
-        self, check_y=None, check_X=None, foo_param=0, expected_fit_params=None
-    ):
+    def __init__(self,
+                 check_y=None,
+                 check_X=None,
+                 foo_param=0,
+                 expected_fit_params=None):
         self.check_y = check_y
         self.check_X = check_X
         self.foo_param = foo_param
@@ -60,7 +79,8 @@ class CheckingClassifier(BaseEstimator, ClassifierMixin):
             assert self.check_X(X)
         if self.check_y is not None:
             assert self.check_y(y)
-        self.classes_ = np.unique(check_array(y, ensure_2d=False, allow_nd=True))
+        self.classes_ = np.unique(
+            check_array(y, ensure_2d=False, allow_nd=True))
         if self.expected_fit_params:
             missing = set(self.expected_fit_params) - set(fit_params)
             assert (
@@ -69,8 +89,7 @@ class CheckingClassifier(BaseEstimator, ClassifierMixin):
             for key, value in fit_params.items():
                 assert len(value) == len(X), (
                     "Fit parameter %s has length"
-                    "%d; expected %d." % (key, len(value), len(X))
-                )
+                    "%d; expected %d." % (key, len(value), len(X)))
         return self
 
     def predict(self, T):
@@ -85,6 +104,7 @@ class CheckingClassifier(BaseEstimator, ClassifierMixin):
             score = 0.0
         return score
 
+
 class BrokenClassifier(BaseEstimator):
     """Broken classifier that cannot be fit twice"""
 
@@ -98,12 +118,14 @@ class BrokenClassifier(BaseEstimator):
     def predict(self, X):
         return np.zeros(X.shape[0])
 
+
 class ArraySlicingWrapper:
     def __init__(self, array):
         self.array = array
 
     def __getitem__(self, aslice):
         return MockDataFrame(self.array[aslice])
+
 
 class MockDataFrame:
     # have shape and length but don't support indexing.

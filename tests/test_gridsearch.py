@@ -1,3 +1,5 @@
+import time
+
 import ray
 from tune_sklearn import TuneGridSearchCV
 from tune_sklearn import TuneSearchCV
@@ -29,12 +31,13 @@ from sklearn import datasets
 from sklearn.model_selection import train_test_split
 from sklearn import linear_model
 from sklearn.exceptions import NotFittedError
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, SGDClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.neighbors import KernelDensity
 import unittest
+from unittest.mock import patch
 from test_utils import (MockClassifier, CheckingClassifier, BrokenClassifier,
-                        MockDataFrame)
+                        SleepClassifier, MockDataFrame)
 
 # def test_check_cv_results_array_types(self, cv_results, param_keys,
 #                                       score_keys):
@@ -130,15 +133,14 @@ class GridSearchTest(unittest.TestCase):
             grid_search.score(X, y), grid_search_no_score.score(X, y))
 
         # giving no scoring function raises an error
-        grid_search_no_score = TuneGridSearchCV(clf_no_score, {"C": Cs})
         with self.assertRaises(TypeError) as exc:
-            grid_search_no_score.fit([[1]])
+            grid_search_no_score = TuneGridSearchCV(clf_no_score, {"C": Cs})
 
         self.assertTrue("no scoring" in str(exc.exception))
 
     @parameterized.expand([("grid", TuneGridSearchCV, {}), ("random",
                                                             TuneSearchCV, {
-                                                                "n_iter": 1
+                                                                "n_trials": 1
                                                             })])
     def test_hyperparameter_searcher_with_fit_params(self, name, cls, kwargs):
         X = np.arange(100).reshape(10, 10)
@@ -204,13 +206,10 @@ class GridSearchTest(unittest.TestCase):
         ]
         for cv in group_cvs:
             gs = TuneGridSearchCV(clf, grid, cv=cv)
-            try:
-                with self.assertLogs("ray.tune") as cm:
-                    gs.fit(X, y)
-                self.assertTrue((
-                    "parameter should not be None.") in str(cm.output))
-            except ValueError as exc:
-                self.assertTrue("parameter should not be None" in str(exc))
+            with self.assertRaises(ValueError) as exc:
+                gs.fit(X, y)
+            self.assertTrue(
+                "parameter should not be None" in str(exc.exception))
 
             gs.fit(X, y, groups=groups)
 
@@ -260,7 +259,7 @@ class GridSearchTest(unittest.TestCase):
         grid_search.fit(X, y)
         self.assertTrue(hasattr(grid_search, "cv_results_"))
 
-        random_search = TuneSearchCV(clf, {"foo_param": [0]}, n_iter=1, cv=3)
+        random_search = TuneSearchCV(clf, {"foo_param": [0]}, n_trials=1, cv=3)
         random_search.fit(X, y)
         self.assertTrue(hasattr(random_search, "cv_results_"))
 
@@ -271,13 +270,13 @@ class GridSearchTest(unittest.TestCase):
         grid_search = TuneGridSearchCV(
             clf, {"foo_param": [1, 2, 3]}, refit=False, cv=3)
         grid_search.fit(X, y)
-        self.assertFalse(hasattr(grid_search, "best_estimator_"))
-        self.assertFalse(hasattr(grid_search, "best_index_"))
-        self.assertFalse(hasattr(grid_search, "best_score_"))
-        self.assertFalse(hasattr(grid_search, "best_params_"))
+        grid_search.best_index_
+        grid_search.best_score_
+        grid_search.best_params_
 
         # Make sure the predict/transform etc fns raise meaningful error msg
         for fn_name in (
+                "best_estimator_",
                 "predict",
                 "predict_proba",
                 "predict_log_proba",
@@ -298,11 +297,10 @@ class GridSearchTest(unittest.TestCase):
 
         clf = LinearSVC()
         cv = TuneGridSearchCV(clf, {"C": [0.1, 1.0]})
-        # with self.assertRaises(ValueError):
-        with self.assertLogs("ray.tune") as cm:
+        with self.assertRaises(ValueError) as exc:
             cv.fit(X_[:180], y_)
-        self.assertTrue(("ValueError: Found input variables with inconsistent "
-                         "numbers of samples: [180, 200]") in str(cm.output))
+        self.assertTrue(("Found input variables with inconsistent numbers of "
+                         "samples: [180, 200]") in str(exc.exception))
 
     def test_grid_search_one_grid_point(self):
         X_, y_ = make_classification(
@@ -430,11 +428,11 @@ class GridSearchTest(unittest.TestCase):
         # test error is raised when the precomputed kernel is not array-like
         # or sparse
         # with self.assertRaises(TuneError):
-        with self.assertLogs("ray.tune") as cm:
+        with self.assertRaises(ValueError) as exc:
             cv.fit(K_train.tolist(), y_train)
-        self.assertTrue((
-            "ValueError: Precomputed kernels or affinity matrices have "
-            "to be passed as arrays or sparse matrices.") in str(cm.output))
+        self.assertTrue(("Precomputed kernels or affinity matrices have "
+                         "to be passed as arrays or sparse matrices."
+                         ) in str(exc.exception))
 
     def test_grid_search_precomputed_kernel_error_nonsquare(self):
         # Test that grid search returns an error with a non-square precomputed
@@ -444,10 +442,10 @@ class GridSearchTest(unittest.TestCase):
         clf = SVC(kernel="precomputed")
         cv = TuneGridSearchCV(clf, {"C": [0.1, 1.0]})
         # with self.assertRaises(TuneError):
-        with self.assertLogs("ray.tune") as cm:
+        with self.assertRaises(ValueError) as exc:
             cv.fit(K_train, y_train)
-        self.assertTrue(("ValueError: X should be a square kernel matrix"
-                         ) in str(cm.output))
+        self.assertTrue((
+            "X should be a square kernel matrix") in str(exc.exception))
 
     def test_refit(self):
         # Regression test for bug in refitting
@@ -558,6 +556,83 @@ class GridSearchTest(unittest.TestCase):
         self.assertEqual(search.best_params_["bandwidth"], 0.1)
         self.assertEqual(search.best_score_, 42)
 
+    def test_gridsearch_multi_inputs(self):
+        # Check that multimetric is detected
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+
+        tune_search = TuneGridSearchCV(
+            SGDClassifier(),
+            parameter_grid,
+            scoring=("accuracy", "f1_micro"),
+            max_iters=20,
+            cv=2,
+            refit=False)
+        tune_search.fit(X, y)
+        self.assertTrue(tune_search.multimetric_)
+
+        tune_search = TuneGridSearchCV(
+            SGDClassifier(),
+            parameter_grid,
+            scoring="f1_micro",
+            max_iters=20,
+            cv=2)
+        tune_search.fit(X, y)
+        self.assertFalse(tune_search.multimetric_)
+
+        # Make sure error is raised when refit isn't set properly
+        tune_search = TuneGridSearchCV(
+            SGDClassifier(),
+            parameter_grid,
+            scoring=("accuracy", "f1_micro"),
+            cv=2,
+            max_iters=20)
+        with self.assertRaises(ValueError):
+            tune_search.fit(X, y)
+
+    def test_gridsearch_multi_cv_results(self):
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+
+        scoring = ("accuracy", "f1_micro")
+        cv = 2
+
+        tune_search = TuneGridSearchCV(
+            SGDClassifier(),
+            parameter_grid,
+            scoring=scoring,
+            max_iters=20,
+            refit=False,
+            cv=cv)
+        tune_search.fit(X, y)
+        result = tune_search.cv_results_
+
+        keys_to_check = []
+
+        for s in scoring:
+            keys_to_check.append("mean_test_%s" % s)
+            for i in range(cv):
+                keys_to_check.append("split%d_test_%s" % (i, s))
+
+        for key in keys_to_check:
+            self.assertIn(key, result)
+
+    def test_gridsearch_no_multi_cv_results(self):
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+
+        cv = 2
+
+        tune_search = TuneGridSearchCV(
+            SGDClassifier(), parameter_grid, max_iters=20, refit=False, cv=cv)
+        tune_search.fit(X, y)
+        result = tune_search.cv_results_
+
+        keys_to_check = ["mean_test_score"]
+
+        for i in range(cv):
+            keys_to_check.append("split%d_test_score" % i)
+
+        for key in keys_to_check:
+            self.assertIn(key, result)
+
     def test_digits(self):
         # Loading the Digits dataset
         digits = datasets.load_digits()
@@ -579,7 +654,7 @@ class GridSearchTest(unittest.TestCase):
             "C": [1, 10, 100, 1000]
         }
 
-        tune_search = TuneGridSearchCV(SVC(), tuned_parameters, max_iters=20)
+        tune_search = TuneGridSearchCV(SVC(), tuned_parameters)
         tune_search.fit(X_train, y_train)
 
         pred = tune_search.predict(X_test)
@@ -611,6 +686,42 @@ class GridSearchTest(unittest.TestCase):
         print(pred)
         error = sum(np.array(pred) - np.array(y_test)) / len(pred)
         print(error)
+
+    def test_local_mode(self):
+        # Pass X as list in dcv.GridSearchCV
+        X = np.arange(100).reshape(10, 10)
+        y = np.array([0] * 5 + [1] * 5)
+
+        clf = CheckingClassifier(check_X=lambda x: isinstance(x, list))
+        cv = KFold(n_splits=3)
+        with patch.object(ray, "init", wraps=ray.init) as wrapped_init:
+            grid_search = TuneGridSearchCV(
+                clf, {"foo_param": [1, 2, 3]}, n_jobs=1, cv=cv)
+            grid_search.fit(X.tolist(), y).score(X, y)
+
+        self.assertTrue(hasattr(grid_search, "cv_results_"))
+        self.assertTrue(wrapped_init.call_args[1]["local_mode"])
+
+    def test_timeout(self):
+        clf = SleepClassifier()
+        # SleepClassifier sleeps for `foo_param` seconds, `cv` times.
+        # Thus, the time budget is exhausted after testing the first two
+        # `foo_param`s.
+        grid_search = TuneGridSearchCV(
+            clf, {"foo_param": [1.1, 1.2, 2.5]},
+            time_budget_s=5.0,
+            cv=2,
+            max_iters=5,
+            early_stopping=True)
+
+        start = time.time()
+        grid_search.fit(X, y)
+        taken = time.time() - start
+
+        print(grid_search)
+        # Without timeout we would need over 50 seconds for this to
+        # finish. Allow for some initialization overhead
+        self.assertLess(taken, 18.0)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,25 @@
+import time
+
 from tune_sklearn import TuneSearchCV
 import numpy as np
 from numpy.testing import assert_array_equal
-from sklearn.datasets import make_classification
+from sklearn.datasets import make_classification, make_regression
+from sklearn.decomposition import PCA
 from scipy.stats import expon
 from sklearn.svm import SVC
-from sklearn.linear_model import SGDClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import SGDClassifier, SGDRegressor
+from sklearn.pipeline import Pipeline
 from sklearn import datasets
 from skopt.space.space import Real
 from ray.tune.schedulers import MedianStoppingRule
 import unittest
+from unittest.mock import patch
 import os
+from tune_sklearn._detect_booster import (has_xgboost, has_catboost,
+                                          has_required_lightgbm_version)
+from tune_sklearn.utils import EarlyStopping
+from test_utils import SleepClassifier
 
 
 class RandomizedSearchTest(unittest.TestCase):
@@ -27,7 +37,7 @@ class RandomizedSearchTest(unittest.TestCase):
         params = dict(C=expon(scale=10), gamma=expon(scale=0.1))
         random_search = TuneSearchCV(
             SVC(),
-            n_iter=n_search_iter,
+            n_trials=n_search_iter,
             cv=n_splits,
             param_distributions=params,
             return_train_score=True,
@@ -111,6 +121,379 @@ class RandomizedSearchTest(unittest.TestCase):
         tune_search.fit(x, y)
 
         self.assertTrue(len(os.listdir("./test-result")) != 0)
+
+    def test_local_mode(self):
+        digits = datasets.load_digits()
+        x = digits.data
+        y = digits.target
+
+        clf = SGDClassifier()
+        parameter_grid = {
+            "alpha": Real(1e-4, 1e-1, 1),
+            "epsilon": Real(0.01, 0.1)
+        }
+        tune_search = TuneSearchCV(
+            clf,
+            parameter_grid,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+        import ray
+        with patch.object(ray, "init", wraps=ray.init) as wrapped_init:
+            tune_search.fit(x, y)
+        self.assertTrue(wrapped_init.call_args[1]["local_mode"])
+
+    def test_multi_best_classification(self):
+        digits = datasets.load_digits()
+        x = digits.data
+        y = digits.target
+        model = SGDClassifier()
+
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+        scoring = ("accuracy", "f1_micro")
+        search_methods = ["random", "bayesian", "hyperopt", "bohb", "optuna"]
+        for search_method in search_methods:
+
+            tune_search = TuneSearchCV(
+                model,
+                parameter_grid,
+                scoring=scoring,
+                search_optimization=search_method,
+                cv=2,
+                n_trials=3,
+                n_jobs=1,
+                refit="accuracy")
+            tune_search.fit(x, y)
+            self.assertAlmostEqual(
+                tune_search.best_score_,
+                max(tune_search.cv_results_["mean_test_accuracy"]),
+                places=10)
+
+            p = tune_search.cv_results_["params"]
+            scores = tune_search.cv_results_["mean_test_accuracy"]
+            cv_best_param = max(
+                list(zip(scores, p)), key=lambda pair: pair[0])[1]
+            self.assertEqual(tune_search.best_params_, cv_best_param)
+
+    def test_multi_best_classification_scoring_dict(self):
+        digits = datasets.load_digits()
+        x = digits.data
+        y = digits.target
+        model = SGDClassifier()
+
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+        scoring = {"acc": "accuracy", "f1": "f1_micro"}
+        search_methods = ["random", "bayesian", "hyperopt", "bohb", "optuna"]
+        for search_method in search_methods:
+
+            tune_search = TuneSearchCV(
+                model,
+                parameter_grid,
+                scoring=scoring,
+                search_optimization=search_method,
+                cv=2,
+                n_trials=3,
+                n_jobs=1,
+                refit="acc")
+            tune_search.fit(x, y)
+            self.assertAlmostEqual(
+                tune_search.best_score_,
+                max(tune_search.cv_results_["mean_test_acc"]),
+                places=10)
+
+            p = tune_search.cv_results_["params"]
+            scores = tune_search.cv_results_["mean_test_acc"]
+            cv_best_param = max(
+                list(zip(scores, p)), key=lambda pair: pair[0])[1]
+            self.assertEqual(tune_search.best_params_, cv_best_param)
+
+    def test_multi_best_regression(self):
+        x, y = make_regression(n_samples=100, n_features=10, n_informative=5)
+        model = SGDRegressor()
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+
+        scoring = ("neg_mean_absolute_error", "neg_mean_squared_error")
+
+        search_methods = ["random", "bayesian", "hyperopt", "bohb", "optuna"]
+        for search_method in search_methods:
+
+            tune_search = TuneSearchCV(
+                model,
+                parameter_grid,
+                scoring=scoring,
+                search_optimization=search_method,
+                cv=2,
+                n_trials=3,
+                n_jobs=1,
+                refit="neg_mean_absolute_error")
+            tune_search.fit(x, y)
+            self.assertAlmostEqual(
+                tune_search.best_score_,
+                max(tune_search.cv_results_[
+                    "mean_test_neg_mean_absolute_error"]),
+                places=10)
+
+            p = tune_search.cv_results_["params"]
+            scores = tune_search.cv_results_[
+                "mean_test_neg_mean_absolute_error"]
+            cv_best_param = max(
+                list(zip(scores, p)), key=lambda pair: pair[0])[1]
+            self.assertEqual(tune_search.best_params_, cv_best_param)
+
+    def test_multi_refit_false(self):
+        digits = datasets.load_digits()
+        x = digits.data
+        y = digits.target
+        model = SGDClassifier()
+
+        parameter_grid = {"alpha": [1e-4, 1e-1, 1], "epsilon": [0.01, 0.1]}
+        scoring = ("accuracy", "f1_micro")
+
+        tune_search = TuneSearchCV(
+            model,
+            parameter_grid,
+            scoring=scoring,
+            search_optimization="random",
+            cv=2,
+            n_trials=3,
+            n_jobs=1,
+            refit=False)
+        tune_search.fit(x, y)
+        with self.assertRaises(ValueError) as exc:
+            tune_search.best_score_
+        self.assertTrue(("instance was initialized with refit=False. "
+                         "For multi-metric evaluation,") in str(exc.exception))
+        with self.assertRaises(ValueError) as exc:
+            tune_search.best_index_
+        self.assertTrue(("instance was initialized with refit=False. "
+                         "For multi-metric evaluation,") in str(exc.exception))
+        with self.assertRaises(ValueError) as exc:
+            tune_search.best_params_
+        self.assertTrue(("instance was initialized with refit=False. "
+                         "For multi-metric evaluation,") in str(exc.exception))
+
+    def test_warm_start_detection(self):
+        parameter_grid = {"alpha": Real(1e-4, 1e-1, 1)}
+        from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+        clf = VotingClassifier(estimators=[(
+            "rf", RandomForestClassifier(n_estimators=50, random_state=0))])
+        tune_search = TuneSearchCV(
+            clf,
+            parameter_grid,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+        self.assertEqual(tune_search.early_stop_type,
+                         EarlyStopping.NO_EARLY_STOP)
+
+        from sklearn.tree import DecisionTreeClassifier
+        clf = DecisionTreeClassifier(random_state=0)
+        tune_search2 = TuneSearchCV(
+            clf,
+            parameter_grid,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+        self.assertEqual(tune_search2.early_stop_type,
+                         EarlyStopping.NO_EARLY_STOP)
+
+        from sklearn.linear_model import LogisticRegression
+        clf = LogisticRegression()
+        tune_search3 = TuneSearchCV(
+            clf,
+            parameter_grid,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+
+        self.assertEqual(tune_search3.early_stop_type,
+                         EarlyStopping.NO_EARLY_STOP)
+
+        tune_search4 = TuneSearchCV(
+            clf,
+            parameter_grid,
+            early_stopping=True,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+        self.assertEqual(tune_search4.early_stop_type,
+                         EarlyStopping.WARM_START_ITER)
+
+        clf = RandomForestClassifier()
+        tune_search5 = TuneSearchCV(
+            clf,
+            parameter_grid,
+            early_stopping=True,
+            n_jobs=1,
+            max_iters=10,
+            local_dir="./test-result")
+        self.assertEqual(tune_search5.early_stop_type,
+                         EarlyStopping.WARM_START_ENSEMBLE)
+
+    def test_warm_start_error(self):
+        parameter_grid = {"alpha": Real(1e-4, 1e-1, 1)}
+        from sklearn.ensemble import VotingClassifier, RandomForestClassifier
+        clf = VotingClassifier(estimators=[(
+            "rf", RandomForestClassifier(n_estimators=50, random_state=0))])
+        tune_search = TuneSearchCV(
+            clf,
+            parameter_grid,
+            n_jobs=1,
+            early_stopping=False,
+            max_iters=10,
+            local_dir="./test-result")
+        self.assertFalse(tune_search._can_early_stop())
+        with self.assertRaises(ValueError):
+            tune_search = TuneSearchCV(
+                clf,
+                parameter_grid,
+                n_jobs=1,
+                early_stopping=True,
+                max_iters=10,
+                local_dir="./test-result")
+
+        from sklearn.linear_model import LogisticRegression
+        clf = LogisticRegression()
+        with self.assertRaises(ValueError):
+            parameter_grid = {"max_iter": [1, 2]}
+            TuneSearchCV(
+                clf,
+                parameter_grid,
+                early_stopping=True,
+                n_jobs=1,
+                max_iters=10,
+                local_dir="./test-result")
+
+        from sklearn.ensemble import RandomForestClassifier
+        clf = RandomForestClassifier()
+        with self.assertRaises(ValueError):
+            parameter_grid = {"n_estimators": [1, 2]}
+            TuneSearchCV(
+                clf,
+                parameter_grid,
+                early_stopping=True,
+                n_jobs=1,
+                max_iters=10,
+                local_dir="./test-result")
+
+    def test_warn_reduce_maxiters(self):
+        parameter_grid = {"alpha": Real(1e-4, 1e-1, 1)}
+        from sklearn.ensemble import RandomForestClassifier
+        clf = RandomForestClassifier(max_depth=2, random_state=0)
+        with self.assertWarnsRegex(UserWarning, "max_iters is set"):
+            TuneSearchCV(
+                clf, parameter_grid, max_iters=10, local_dir="./test-result")
+        with self.assertWarnsRegex(UserWarning, "max_iters is set"):
+            TuneSearchCV(
+                SGDClassifier(),
+                parameter_grid,
+                max_iters=10,
+                local_dir="./test-result")
+
+    def test_warn_early_stop(self):
+        with self.assertWarnsRegex(UserWarning, "max_iters = 1"):
+            TuneSearchCV(
+                LogisticRegression(), {"C": [1, 2]}, early_stopping=True)
+        with self.assertWarnsRegex(UserWarning, "max_iters = 1"):
+            TuneSearchCV(
+                SGDClassifier(), {"epsilon": [0.1, 0.2]}, early_stopping=True)
+
+    @unittest.skipIf(not has_xgboost(), "xgboost not installed")
+    def test_early_stop_xgboost_warn(self):
+        from xgboost.sklearn import XGBClassifier
+        with self.assertWarnsRegex(UserWarning, "github.com"):
+            TuneSearchCV(
+                XGBClassifier(), {"C": [1, 2]},
+                early_stopping=True,
+                max_iters=10)
+        with self.assertWarnsRegex(UserWarning, "max_iters"):
+            TuneSearchCV(
+                XGBClassifier(), {"C": [1, 2]},
+                early_stopping=True,
+                max_iters=1)
+
+    @unittest.skipIf(not has_required_lightgbm_version(),
+                     "lightgbm not installed")
+    def test_early_stop_lightgbm_warn(self):
+        from lightgbm import LGBMClassifier
+        with self.assertWarnsRegex(UserWarning, "lightgbm"):
+            TuneSearchCV(
+                LGBMClassifier(), {"learning_rate": [0.1, 0.5]},
+                early_stopping=True,
+                max_iters=10)
+        with self.assertWarnsRegex(UserWarning, "max_iters"):
+            TuneSearchCV(
+                LGBMClassifier(), {"learning_rate": [0.1, 0.5]},
+                early_stopping=True,
+                max_iters=1)
+
+    @unittest.skipIf(not has_catboost(), "catboost not installed")
+    def test_early_stop_catboost_warn(self):
+        from catboost import CatBoostClassifier
+        with self.assertWarnsRegex(UserWarning, "Catboost"):
+            TuneSearchCV(
+                CatBoostClassifier(), {"learning_rate": [0.1, 0.5]},
+                early_stopping=True,
+                max_iters=10)
+        with self.assertWarnsRegex(UserWarning, "max_iters"):
+            TuneSearchCV(
+                CatBoostClassifier(), {"learning_rate": [0.1, 0.5]},
+                early_stopping=True,
+                max_iters=1)
+
+    def test_pipeline_early_stop(self):
+        digits = datasets.load_digits()
+        x = digits.data
+        y = digits.target
+
+        pipe = Pipeline([("reduce_dim", PCA()), ("classify", SGDClassifier())])
+        parameter_grid = [
+            {
+                "classify__alpha": [1e-4, 1e-1, 1],
+                "classify__epsilon": [0.01, 0.1]
+            },
+        ]
+
+        with self.assertRaises(ValueError) as exc:
+            TuneSearchCV(
+                pipe,
+                parameter_grid,
+                early_stopping=True,
+                pipeline_auto_early_stop=False,
+                max_iters=10)
+        self.assertTrue((
+            "Early stopping is not supported because the estimator does "
+            "not have `partial_fit`, does not support warm_start, or "
+            "is a tree classifier. Set `early_stopping=False`."
+        ) in str(exc.exception))
+
+        tune_search = TuneSearchCV(
+            pipe, parameter_grid, early_stopping=True, max_iters=10)
+        tune_search.fit(x, y)
+
+    def test_timeout(self):
+        X, y = make_classification(
+            n_samples=50, n_features=50, n_informative=3, random_state=0)
+
+        clf = SleepClassifier()
+        # SleepClassifier sleeps for `foo_param` seconds, `cv` times.
+        # Thus, the time budget is exhausted after testing the first two
+        # `foo_param`s.
+        grid_search = TuneSearchCV(
+            clf, {"foo_param": [1.1, 1.2, 2.5]},
+            time_budget_s=5.0,
+            cv=2,
+            max_iters=5,
+            early_stopping=True)
+
+        start = time.time()
+        grid_search.fit(X, y)
+        taken = time.time() - start
+
+        print(grid_search)
+        # Without timeout we would need over 50 seconds for this to
+        # finish. Allow for some initialization overhead
+        self.assertLess(taken, 18.0)
 
 
 if __name__ == "__main__":

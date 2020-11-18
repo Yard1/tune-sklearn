@@ -1,14 +1,17 @@
 """Class for doing grid search over lists of hyperparameters
     -- Anthony Yu and Michael Chau
 """
+import warnings
 
 from tune_sklearn.tune_basesearch import TuneBaseSearchCV
 from tune_sklearn._trainable import _Trainable
+from tune_sklearn._trainable import _PipelineTrainable
 from sklearn.model_selection._search import _check_param_grid
 from sklearn.base import clone
 from sklearn.model_selection import ParameterGrid
 from ray import tune
 from tune_sklearn.list_searcher import ListSearcher
+from tune_sklearn.utils import check_is_pipeline, check_error_warm_start
 import os
 
 
@@ -47,13 +50,19 @@ class TuneGridSearchCV(TuneBaseSearchCV):
               used if the estimator supports partial fitting
             - If None or False, early stopping will not be used.
 
-        scoring (str, `callable`, or None): A single
+        scoring (str, list/tuple, dict, or None): A single
             string or a callable to evaluate the predictions on the test set.
             See https://scikit-learn.org/stable/modules/model_evaluation.html
             #scoring-parameter for all options.
+            For evaluating multiple metrics, either give a list/tuple of
+            (unique) strings or a dict with names as keys and callables as
+            values.
             If None, the estimator's score method is used. Defaults to None.
         n_jobs (int): Number of jobs to run in parallel. None or -1 means
-            using all processors. Defaults to None.
+            using all processors. Defaults to None. If set to 1, jobs
+            will be run using Ray's 'local mode'. This can
+            lead to significant speedups if the model takes < 10 seconds
+            to fit due to removing inter-process communication overheads.
         sk_n_jobs (int): Number of jobs to run in parallel for cross validating
             each hyperparameter set; the ``n_jobs`` parameter for
             ``cross_validate`` call to sklearn when early stopping isn't used.
@@ -67,7 +76,7 @@ class TuneGridSearchCV(TuneBaseSearchCV):
             For integer/None inputs, if the estimator is a classifier and ``y``
             is either binary or multiclass, :class:`StratifiedKFold` is used.
             In all other cases, :class:`KFold` is used. Defaults to None.
-        refit (bool, str, or `callable`):
+        refit (bool or str):
             Refit an estimator using the best found parameters on the whole
             dataset.
             For multiple metric evaluation, this needs to be a string denoting
@@ -79,8 +88,7 @@ class TuneGridSearchCV(TuneBaseSearchCV):
             Also for multiple metric evaluation, the attributes
             ``best_index_``, ``best_score_`` and ``best_params_`` will only be
             available if ``refit`` is set and all of them will be determined
-            w.r.t this specific scorer. ``best_score_`` is not returned if
-            refit is callable.
+            w.r.t this specific scorer. If refit not needed, set to False.
             See ``scoring`` parameter to know more about multiple metric
             evaluation.
             Defaults to True.
@@ -100,13 +108,34 @@ class TuneGridSearchCV(TuneBaseSearchCV):
             computationally expensive and is not strictly required to select
             the parameters that yield the best generalization performance.
         local_dir (str): A string that defines where checkpoints will
-            be stored. Defaults to "~/ray_results"
+            be stored. Defaults to "~/ray_results".
         max_iters (int): Indicates the maximum number of epochs to run for each
             hyperparameter configuration sampled.
-            This parameter is used for early stopping. Defaults to 10.
+            This parameter is used for early stopping. Defaults to 1.
+            Depending on the classifier type provided, a resource parameter
+            (`resource_param = max_iter or n_estimators`) will be detected.
+            The value of `resource_param` will be treated as a
+            "max resource value", and all classifiers will be
+            initialized with `max resource value // max_iters`, where
+            `max_iters` is this defined parameter. On each epoch,
+            resource_param (max_iter or n_estimators) is
+            incremented by `max resource value // max_iters`.
         use_gpu (bool): Indicates whether to use gpu for fitting.
             Defaults to False. If True, training will use 1 gpu
             for `resources_per_trial`.
+        loggers (list): A list of the names of the Tune loggers as strings
+            to be used to log results. Possible values are "tensorboard",
+            "csv", "mlflow", and "json"
+        pipeline_auto_early_stop (bool): Only relevant if estimator is Pipeline
+            object and early_stopping is enabled/True. If True, early stopping
+            will be performed on the last stage of the pipeline (which must
+            support early stopping). If False, early stopping will be
+            determined by 'Pipeline.warm_start' or 'Pipeline.partial_fit'
+            capabilities, which are by default not supported by standard
+            SKlearn. Defaults to True.
+        time_budget_s (int|float|datetime.timedelta): Global time budget in
+            seconds after which all trials are stopped. Can also be a
+            ``datetime.timedelta`` object.
     """
 
     def __init__(self,
@@ -122,13 +151,16 @@ class TuneGridSearchCV(TuneBaseSearchCV):
                  error_score="raise",
                  return_train_score=False,
                  local_dir="~/ray_results",
-                 max_iters=10,
-                 use_gpu=False):
+                 max_iters=1,
+                 use_gpu=False,
+                 loggers=None,
+                 pipeline_auto_early_stop=True,
+                 time_budget_s=None):
         super(TuneGridSearchCV, self).__init__(
             estimator=estimator,
             early_stopping=early_stopping,
             scoring=scoring,
-            n_jobs=n_jobs,
+            n_jobs=n_jobs or -1,
             sk_n_jobs=sk_n_jobs,
             cv=cv,
             refit=refit,
@@ -137,7 +169,12 @@ class TuneGridSearchCV(TuneBaseSearchCV):
             local_dir=local_dir,
             max_iters=max_iters,
             verbose=verbose,
-            use_gpu=use_gpu)
+            use_gpu=use_gpu,
+            loggers=loggers,
+            pipeline_auto_early_stop=pipeline_auto_early_stop,
+            time_budget_s=time_budget_s)
+
+        check_error_warm_start(self.early_stop_type, param_grid, estimator)
 
         _check_param_grid(param_grid)
         self.param_grid = param_grid
@@ -185,38 +222,39 @@ class TuneGridSearchCV(TuneBaseSearchCV):
                 `tune.run`.
 
         """
+        trainable = _Trainable
+        if self.pipeline_auto_early_stop and check_is_pipeline(
+                self.estimator) and self.early_stopping:
+            trainable = _PipelineTrainable
+
         if self.early_stopping is not None:
-            config["estimator"] = [
+            config["estimator_list"] = [
                 clone(self.estimator) for _ in range(self.n_splits)
             ]
         else:
-            config["estimator"] = self.estimator
+            config["estimator_list"] = [self.estimator]
+
+        run_args = dict(
+            scheduler=self.early_stopping,
+            reuse_actors=True,
+            verbose=self.verbose,
+            stop={"training_iteration": self.max_iters},
+            config=config,
+            fail_fast="raise",
+            resources_per_trial=resources_per_trial,
+            local_dir=os.path.expanduser(self.local_dir),
+            loggers=self.loggers,
+            time_budget_s=self.time_budget_s)
 
         if isinstance(self.param_grid, list):
-            analysis = tune.run(
-                _Trainable,
-                search_alg=ListSearcher(self.param_grid),
-                num_samples=self._list_grid_num_samples(),
-                scheduler=self.early_stopping,
-                reuse_actors=True,
-                verbose=self.verbose,
-                stop={"training_iteration": self.max_iters},
-                config=config,
-                fail_fast=True,
-                checkpoint_at_end=True,
-                resources_per_trial=resources_per_trial,
-                local_dir=os.path.expanduser(self.local_dir))
-        else:
-            analysis = tune.run(
-                _Trainable,
-                scheduler=self.early_stopping,
-                reuse_actors=True,
-                verbose=self.verbose,
-                stop={"training_iteration": self.max_iters},
-                config=config,
-                fail_fast=True,
-                checkpoint_at_end=True,
-                resources_per_trial=resources_per_trial,
-                local_dir=os.path.expanduser(self.local_dir))
+            run_args.update(
+                dict(
+                    search_alg=ListSearcher(self.param_grid),
+                    num_samples=self._list_grid_num_samples()))
 
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="fail_fast='raise' "
+                "detected.")
+            analysis = tune.run(trainable, **run_args)
         return analysis
