@@ -12,8 +12,8 @@ import os
 
 from ray import tune
 from ray.tune.sample import Domain
-from ray.tune.suggest import ConcurrencyLimiter, BasicVariantGenerator
-from ray.tune.suggest.suggestion import Searcher
+from ray.tune.suggest import (ConcurrencyLimiter, BasicVariantGenerator,
+                              Searcher)
 from ray.tune.suggest.bohb import TuneBOHB
 from ray.tune.schedulers import HyperBandForBOHB
 from ray.tune.suggest.skopt import SkOptSearch
@@ -254,9 +254,10 @@ class TuneSearchCV(TuneBaseSearchCV):
             resource_param (max_iter or n_estimators) is
             incremented by `max resource value // max_iters`.
         search_optimization ("random" or "bayesian" or "bohb" or "hyperopt"
-            or "optuna"): Randomized search is invoked with
-            ``search_optimization`` set to ``"random"`` and behaves like
-            scikit-learn's ``RandomizedSearchCV``.
+            or "optuna" or ray.tune.suggest.Searcher):
+            Randomized search is invoked with ``search_optimization`` set to
+            ``"random"`` and behaves like scikit-learn's
+            ``RandomizedSearchCV``.
 
             Bayesian search can be invoked with several values of
             ``search_optimization``.
@@ -270,6 +271,9 @@ class TuneSearchCV(TuneBaseSearchCV):
 
             All types of search aside from Randomized search require parent
             libraries to be installed.
+
+            Alternatively, instead of a string, a Ray Tune Searcher object
+            can be used, which will be passed directly to ``tune.run()``.
         use_gpu (bool): Indicates whether to use gpu for fitting.
             Defaults to False. If True, training will start processes
             with the proper CUDA VISIBLE DEVICE settings set. If a Ray
@@ -333,7 +337,7 @@ class TuneSearchCV(TuneBaseSearchCV):
             raise ValueError(
                 "Search optimization must be one of "
                 f"{', '.join(list(available_optimizations.values()))} "
-                "or a Ray Tune Searcher instance.")
+                "or a ray.tune.suggest.Searcher object.")
 
         self._try_import_required_libraries(search_optimization)
 
