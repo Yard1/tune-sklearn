@@ -18,7 +18,7 @@ from ray.tune.suggest.bohb import TuneBOHB
 from ray.tune.schedulers import HyperBandForBOHB
 from ray.tune.suggest.skopt import SkOptSearch
 from ray.tune.suggest.hyperopt import HyperOptSearch
-from ray.tune.suggest.optuna import OptunaSearch, param
+from ray.tune.suggest.optuna import OptunaSearch
 
 from tune_sklearn.utils import check_is_pipeline, MaximumIterationStopper
 from tune_sklearn.tune_basesearch import TuneBaseSearchCV
@@ -528,14 +528,11 @@ class TuneSearchCV(TuneBaseSearchCV):
                             "prior needs to be either "
                             f"'uniform' or 'log-uniform', was {prior}")
                 if prior == "log-uniform":
-                    config_space.append(
-                        param.suggest_loguniform(param_name, low, high))
+                    config_space.append(tune.loguniform(param_name, low, high))
                 else:
-                    config_space.append(
-                        param.suggest_uniform(param_name, low, high))
+                    config_space.append(tune.uniform(param_name, low, high))
             elif isinstance(space, list):
-                config_space.append(
-                    param.suggest_categorical(param_name, space))
+                config_space.append(tune.choice(param_name, space))
             else:
                 config_space.append(space)
         return config_space
