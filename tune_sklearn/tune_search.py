@@ -661,6 +661,8 @@ class TuneSearchCV(TuneBaseSearchCV):
             metric=self._metric_name,
             mode="max")
 
+        override_scheluder_params = False
+
         if self.search_optimization == "random":
             if isinstance(self.param_distributions, list):
                 search_algo = RandomListSearcher(self.param_distributions)
@@ -670,7 +672,6 @@ class TuneSearchCV(TuneBaseSearchCV):
         else:
             search_space = None
             override_search_space = True
-            override_scheluder_params = False
             if self._is_param_distributions_all_tune_domains():
                 run_args["config"].update(self.param_distributions)
                 override_search_space = False
