@@ -717,6 +717,8 @@ class TuneSearchCV(TuneBaseSearchCV):
                 run_args["search_alg"] = search_algo
 
             else:
+                if override_search_space:
+                    search_space = self.param_distributions
                 search_algo = self.search_optimization(
                     space=search_space, **search_kwargs)
                 run_args["search_alg"] = search_algo
