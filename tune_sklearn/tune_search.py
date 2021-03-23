@@ -672,7 +672,8 @@ class TuneSearchCV(TuneBaseSearchCV):
                 override_search_space = False
 
             search_kwargs = self.search_kwargs.copy()
-            if override_search_space:
+            if override_search_space or isinstance(self.search_optimization,
+                                                   Searcher):
                 search_kwargs["metric"] = run_args.pop("metric")
                 search_kwargs["mode"] = run_args.pop("mode")
                 if run_args["scheduler"]:
@@ -720,10 +721,11 @@ class TuneSearchCV(TuneBaseSearchCV):
                     raise ValueError(
                         "Cannot use a non-Tune search space with a Searcher"
                         " object. If you want to use a custom search space,"
-                        " initialize the Searcher object with a search space"
-                        " and pass an empty dictionary in param_distributions."
-                    )
+                        " initialize the Searcher object with a search space,"
+                        " metric and mode, then pass an empty dictionary"
+                        " in `TuneSearchCV` param_distributions.")
                 search_algo = self.search_optimization
+                run_args["search_alg"] = search_algo
 
         if isinstance(self.n_jobs, int) and self.n_jobs > 0 \
            and not self._str_search_optimization == "random":
