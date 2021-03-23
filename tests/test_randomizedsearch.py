@@ -14,7 +14,6 @@ from skopt.space.space import Real
 from ray import tune
 
 from ray.tune.schedulers import MedianStoppingRule
-from ray.tune.suggest.skopt import SkOptSearch
 import unittest
 from unittest.mock import patch
 import os
@@ -618,26 +617,32 @@ class TestSearchSpace(unittest.TestCase):
         self._test_method("optuna")
 
     def testCustomSearcher(self):
-        class CustomSearcher(SkOptSearch):
+        from ray.tune.suggest.hyperopt import HyperOptSearch
+
+        class CustomSearcher(HyperOptSearch):
             pass
 
-        self._test_method(CustomSearcher)
-
-    def testCustomSearcherWithSearchSpace(self):
-        class CustomSearcher(SkOptSearch):
-            pass
-
-        skopt_parameter_grid = {
-            "alpha": Real(1e-4, 0.5),
-            "epsilon": Real(0.01, 0.05),
-        }
         with self.assertRaises(ValueError) as exc:
             self._test_method(CustomSearcher())
         self.assertTrue((
             "Search optimization must be one of") in str(exc.exception))
 
+        self._test_method(CustomSearcher)
+
+    def testCustomSearcherWithSearchSpace(self):
+        from ray.tune.suggest.hyperopt import HyperOptSearch
+        from hyperopt import hp
+
+        class CustomSearcher(HyperOptSearch):
+            pass
+
+        hp_parameter_grid = {
+            "alpha": hp.uniform(1e-4, 0.5),
+            "epsilon": hp.uniform(0.01, 0.05),
+        }
+
         self._test_method(
-            CustomSearcher, param_distributions=skopt_parameter_grid)
+            CustomSearcher, param_distributions=hp_parameter_grid)
 
     def _test_method(self, search_method, **kwargs):
         digits = datasets.load_digits()
