@@ -639,6 +639,7 @@ class TestSearchSpace(unittest.TestCase):
         hp_parameter_grid = {
             "alpha": hp.uniform("alpha", 1e-4, 0.5),
             "epsilon": hp.uniform("epsilon", 0.01, 0.05),
+            "penalty": hp.choice("penalty", ["elasticnet", "l1"]),
         }
 
         self._test_method(
