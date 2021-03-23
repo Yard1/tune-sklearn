@@ -654,7 +654,9 @@ class TuneSearchCV(TuneBaseSearchCV):
             resources_per_trial=resources_per_trial,
             local_dir=os.path.expanduser(self.local_dir),
             loggers=self.loggers,
-            time_budget_s=self.time_budget_s)
+            time_budget_s=self.time_budget_s,
+            metric=self._metric_name,
+            mode="max")
 
         if self.search_optimization == "random":
             if isinstance(self.param_distributions, list):
@@ -670,7 +672,6 @@ class TuneSearchCV(TuneBaseSearchCV):
                 override_search_space = False
 
             search_kwargs = self.search_kwargs.copy()
-            search_kwargs.update(metric=self._metric_name, mode="max")
 
             if self.search_optimization == "bayesian":
                 if override_search_space:
