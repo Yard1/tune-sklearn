@@ -1,7 +1,6 @@
 """Class for cross-validation over distributions of hyperparameters
     -- Anthony Yu and Michael Chau
 """
-from copy import deepcopy
 import logging
 import random
 
@@ -255,7 +254,7 @@ class TuneSearchCV(TuneBaseSearchCV):
             resource_param (max_iter or n_estimators) is
             incremented by `max resource value // max_iters`.
         search_optimization ("random" or "bayesian" or "bohb" or "hyperopt"
-            or "optuna" or ray.tune.suggest.Searcher):
+            or "optuna" or `ray.tune.suggest.Searcher` class):
             Randomized search is invoked with ``search_optimization`` set to
             ``"random"`` and behaves like scikit-learn's
             ``RandomizedSearchCV``.
@@ -273,10 +272,9 @@ class TuneSearchCV(TuneBaseSearchCV):
             All types of search aside from Randomized search require parent
             libraries to be installed.
 
-            Alternatively, instead of a string, a Ray Tune Searcher object
-            can be used, which will be passed directly to ``tune.run()``, with
-            `_metric` and `_mode` attributes overwritten to match the ones
-            specified.
+            Alternatively, instead of a string, a Ray Tune Searcher class
+            (not object!) can be used, which will be initialized
+            and passed to ``tune.run()``.
         use_gpu (bool): Indicates whether to use gpu for fitting.
             Defaults to False. If True, training will start processes
             with the proper CUDA VISIBLE DEVICE settings set. If a Ray
@@ -334,13 +332,13 @@ class TuneSearchCV(TuneBaseSearchCV):
         if isinstance(search_optimization, str):
             search_optimization = search_optimization.lower()
 
-        if (search_optimization not in set(
-                available_optimizations.values())) and not isinstance(
-                    search_optimization, Searcher):
+        if (search_optimization not in set(available_optimizations.values())
+            ) and (not isinstance(search_optimization, type)
+                   or not issubclass(search_optimization, Searcher)):
             raise ValueError(
                 "Search optimization must be one of "
                 f"{', '.join(list(available_optimizations.values()))} "
-                "or a ray.tune.suggest.Searcher object.")
+                "or a ray.tune.suggest.Searcher class.")
 
         self._try_import_required_libraries(search_optimization)
 
@@ -412,7 +410,7 @@ class TuneSearchCV(TuneBaseSearchCV):
             self.seed = random_state
 
         if search_optimization == "random" or isinstance(
-                search_optimization, Searcher):
+                search_optimization, type):
             if search_kwargs:
                 raise ValueError(f"{search_optimization} does not support "
                                  f"extra args: {search_kwargs}")
@@ -661,8 +659,6 @@ class TuneSearchCV(TuneBaseSearchCV):
             metric=self._metric_name,
             mode="max")
 
-        override_scheluder_params = False
-
         if self.search_optimization == "random":
             if isinstance(self.param_distributions, list):
                 search_algo = RandomListSearcher(self.param_distributions)
@@ -680,7 +676,9 @@ class TuneSearchCV(TuneBaseSearchCV):
             if override_search_space:
                 search_kwargs["metric"] = run_args.pop("metric")
                 search_kwargs["mode"] = run_args.pop("mode")
-                override_scheluder_params = True
+                if run_args["scheduler"]:
+                    run_args["scheduler"]._metric = search_kwargs["metric"]
+                    run_args["scheduler"]._mode = search_kwargs["mode"]
 
             if self.search_optimization == "bayesian":
                 if override_search_space:
@@ -719,41 +717,9 @@ class TuneSearchCV(TuneBaseSearchCV):
                 run_args["search_alg"] = search_algo
 
             else:
-                if override_search_space:
-                    raise ValueError(
-                        "Cannot use a non-Tune search space with a Searcher"
-                        " object. If you want to use a custom search space,"
-                        " initialize the Searcher object with a search space,"
-                        " then pass an empty dictionary"
-                        " in `TuneSearchCV` param_distributions.")
-                search_algo = self.search_optimization
-                # hack to check if space has been set on the searcher already
-                try:
-                    was_space_set_already = not deepcopy(
-                        search_algo).set_search_properties(
-                            "score", "max", {"a": 1})
-                except Exception:
-                    was_space_set_already = False
-                if was_space_set_already:
-                    search_kwargs["metric"] = run_args.pop("metric")
-                    search_kwargs["mode"] = run_args.pop("mode")
-                    if not hasattr(search_algo, "_metric") or not hasattr(
-                            search_algo, "_mode"):
-                        raise ValueError(
-                            "If passing a Searcher object initialized"
-                            " with a search space, it must have"
-                            " `_metric` and `_mode` attributes.")
-                    warnings.warn(
-                        "Overwriting `_metric` and `_mode` attributes in "
-                        f"Searcher {search_algo}", UserWarning)
-                    search_algo._metric = search_kwargs["metric"]
-                    search_algo._mode = search_kwargs["mode"]
-                    override_scheluder_params = True
+                search_algo = self.search_optimization(
+                    space=search_space, **search_kwargs)
                 run_args["search_alg"] = search_algo
-
-        if override_scheluder_params and run_args["scheduler"]:
-            run_args["scheduler"]._metric = search_kwargs["metric"]
-            run_args["scheduler"]._mode = search_kwargs["mode"]
 
         if isinstance(self.n_jobs, int) and self.n_jobs > 0 \
            and not self._str_search_optimization == "random":
