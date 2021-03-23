@@ -728,8 +728,8 @@ class TuneSearchCV(TuneBaseSearchCV):
                         " in `TuneSearchCV` param_distributions.")
                 search_algo = self.search_optimization
                 # hack to check if space has been set on the searcher already
-                if not deepcopy(search_algo).set_search_properties(
-                        "score", "max", {}):
+                was_space_set_already = deepcopy(search_algo).set_search_properties("score", "max", {"a": 1})
+                if not was_space_set_already:
                     search_kwargs["metric"] = run_args.pop("metric")
                     search_kwargs["mode"] = run_args.pop("mode")
                     if not hasattr(search_algo, "_metric") or not hasattr(
