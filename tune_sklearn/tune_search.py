@@ -672,9 +672,12 @@ class TuneSearchCV(TuneBaseSearchCV):
                 override_search_space = False
 
             search_kwargs = self.search_kwargs.copy()
-            if override_search_space:
-                search_kwargs["metric"] = run_args.pop("metric")
-                search_kwargs["mode"] = run_args.pop("mode")
+            # if override_search_space:
+            #     search_kwargs["metric"] = run_args.pop("metric")
+            #     search_kwargs["mode"] = run_args.pop("mode")
+            #     if run_args["scheduler"]:
+            #         run_args["scheduler"]._metric = search_kwargs["metric"]
+            #         run_args["scheduler"]._mode = search_kwargs["mode"]
 
             if self.search_optimization == "bayesian":
                 if override_search_space:
