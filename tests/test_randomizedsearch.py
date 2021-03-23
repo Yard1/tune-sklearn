@@ -638,16 +638,33 @@ class TestSearchSpace(unittest.TestCase):
             "alpha": Real(1e-4, 0.5),
             "epsilon": Real(0.01, 0.05),
         }
-        self._test_method(CustomSearcher(space=skopt_parameter_grid))
+        with self.assertRaises(ValueError) as exc:
+            self._test_method(CustomSearcher(space=skopt_parameter_grid))
+        self.assertTrue((
+            "You passed a `config` parameter to `tune.run()` with unresolved "
+            "parameters, but the search algorithm was already instantiated "
+            "with a search space.") in str(exc.exception))
+
+        with self.assertRaises(ValueError) as exc:
+            self._test_method(
+                CustomSearcher(), param_distributions=skopt_parameter_grid)
+        self.assertTrue(("Cannot use a non-Tune search space with a Searcher"
+                         ) in str(exc.exception))
+
+        self._test_method(
+            CustomSearcher(space=skopt_parameter_grid), param_distributions={})
 
     def _test_method(self, search_method, **kwargs):
         digits = datasets.load_digits()
         x = digits.data
         y = digits.target
 
+        param_distributions = kwargs.pop("param_distributions",
+                                         self.parameter_grid)
+
         tune_search = TuneSearchCV(
             self.clf,
-            self.parameter_grid,
+            param_distributions,
             search_optimization=search_method,
             cv=2,
             n_trials=3,
