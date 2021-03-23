@@ -14,6 +14,7 @@ from skopt.space.space import Real
 from ray import tune
 
 from ray.tune.schedulers import MedianStoppingRule
+from ray.tune.suggest.skopt import SkOptSearch
 import unittest
 from unittest.mock import patch
 import os
@@ -622,6 +623,22 @@ class TestSearchSpace(unittest.TestCase):
 
     def testOptuna(self):
         self._test_method("optuna")
+
+    def testCustomSearcher(self):
+        class CustomSearcher(SkOptSearch):
+            pass
+
+        self._test_method(CustomSearcher())
+
+    def testCustomSearcherWithSearchSpace(self):
+        class CustomSearcher(SkOptSearch):
+            pass
+
+        skopt_parameter_grid = {
+            "alpha": Real(1e-4, 0.5),
+            "epsilon": Real(0.01, 0.05),
+        }
+        self._test_method(CustomSearcher(space=skopt_parameter_grid))
 
     def _test_method(self, search_method, **kwargs):
         digits = datasets.load_digits()
