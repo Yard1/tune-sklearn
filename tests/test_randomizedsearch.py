@@ -637,8 +637,8 @@ class TestSearchSpace(unittest.TestCase):
             pass
 
         hp_parameter_grid = {
-            "alpha": hp.uniform(1e-4, 0.5),
-            "epsilon": hp.uniform(0.01, 0.05),
+            "alpha": hp.uniform("alpha", 1e-4, 0.5),
+            "epsilon": hp.uniform("epsilon", 0.01, 0.05),
         }
 
         self._test_method(
