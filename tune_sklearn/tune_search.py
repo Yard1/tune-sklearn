@@ -528,11 +528,11 @@ class TuneSearchCV(TuneBaseSearchCV):
                             "prior needs to be either "
                             f"'uniform' or 'log-uniform', was {prior}")
                 if prior == "log-uniform":
-                    config_space.append(tune.loguniform(param_name, low, high))
+                    config_space.append(tune.loguniform(low, high))
                 else:
-                    config_space.append(tune.uniform(param_name, low, high))
+                    config_space.append(tune.uniform(low, high))
             elif isinstance(space, list):
-                config_space.append(tune.choice(param_name, space))
+                config_space.append(tune.choice(space))
             else:
                 config_space.append(space)
         return config_space
