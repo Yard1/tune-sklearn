@@ -1,6 +1,7 @@
 """Class for cross-validation over distributions of hyperparameters
     -- Anthony Yu and Michael Chau
 """
+from copy import deepcopy
 import logging
 import random
 
@@ -273,7 +274,9 @@ class TuneSearchCV(TuneBaseSearchCV):
             libraries to be installed.
 
             Alternatively, instead of a string, a Ray Tune Searcher object
-            can be used, which will be passed directly to ``tune.run()``.
+            can be used, which will be passed directly to ``tune.run()``, with
+            `_metric` and `_mode` attributes overwritten to match the ones
+            specified.
         use_gpu (bool): Indicates whether to use gpu for fitting.
             Defaults to False. If True, training will start processes
             with the proper CUDA VISIBLE DEVICE settings set. If a Ray
@@ -667,18 +670,16 @@ class TuneSearchCV(TuneBaseSearchCV):
         else:
             search_space = None
             override_search_space = True
+            override_scheluder_params = False
             if self._is_param_distributions_all_tune_domains():
                 run_args["config"].update(self.param_distributions)
                 override_search_space = False
 
             search_kwargs = self.search_kwargs.copy()
-            if override_search_space or isinstance(self.search_optimization,
-                                                   Searcher):
+            if override_search_space:
                 search_kwargs["metric"] = run_args.pop("metric")
                 search_kwargs["mode"] = run_args.pop("mode")
-                if run_args["scheduler"]:
-                    run_args["scheduler"]._metric = search_kwargs["metric"]
-                    run_args["scheduler"]._mode = search_kwargs["mode"]
+                override_scheluder_params = True
 
             if self.search_optimization == "bayesian":
                 if override_search_space:
@@ -722,10 +723,31 @@ class TuneSearchCV(TuneBaseSearchCV):
                         "Cannot use a non-Tune search space with a Searcher"
                         " object. If you want to use a custom search space,"
                         " initialize the Searcher object with a search space,"
-                        " metric and mode, then pass an empty dictionary"
+                        " then pass an empty dictionary"
                         " in `TuneSearchCV` param_distributions.")
                 search_algo = self.search_optimization
+                # hack to check if space has been set on the searcher already
+                if not deepcopy(search_algo).set_search_properties(
+                        "score", "max", {}):
+                    search_kwargs["metric"] = run_args.pop("metric")
+                    search_kwargs["mode"] = run_args.pop("mode")
+                    if not hasattr(search_algo, "_metric") or not hasattr(
+                            search_algo, "_mode"):
+                        raise ValueError(
+                            "If passing a Searcher object initialized"
+                            " with a search space, it must have"
+                            " `_metric` and `_mode` attributes.")
+                    warnings.warn(
+                        "Overwriting `_metric` and `_mode` attributes in "
+                        f"Searcher {search_algo}", UserWarning)
+                    search_algo._metric = search_kwargs["metric"]
+                    search_algo._mode = search_kwargs["mode"]
+                    override_scheluder_params = True
                 run_args["search_alg"] = search_algo
+
+        if override_scheluder_params and run_args["scheduler"]:
+            run_args["scheduler"]._metric = search_kwargs["metric"]
+            run_args["scheduler"]._mode = search_kwargs["mode"]
 
         if isinstance(self.n_jobs, int) and self.n_jobs > 0 \
            and not self._str_search_optimization == "random":

@@ -645,11 +645,7 @@ class TestSearchSpace(unittest.TestCase):
                          ) in str(exc.exception))
 
         self._test_method(
-            CustomSearcher(
-                space=skopt_parameter_grid,
-                metric="mean_test_score",
-                mode="max"),
-            param_distributions={})
+            CustomSearcher(space=skopt_parameter_grid), param_distributions={})
 
     def _test_method(self, search_method, **kwargs):
         digits = datasets.load_digits()
